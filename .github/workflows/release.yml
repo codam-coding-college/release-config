@@ -1,0 +1,153 @@
+name: Build, Publish & Release
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        description: >-
+          Image path under the registry, without the registry host. Defaults to the
+          calling repository's slug. Override only when the published path must differ
+          from the repo slug (e.g. the repo changed org but deployments still pull the
+          old path).
+        type: string
+        required: false
+        default: ''
+      node-version:
+        description: >-
+          Node version used to run semantic-release. Unrelated to the version the image is
+          built with, which the Dockerfile controls.
+        type: string
+        required: false
+        default: 'lts/*'
+      submodules:
+        description: 'Passed to actions/checkout: "false", "true" or "recursive"'
+        type: string
+        required: false
+        default: 'recursive'
+      dockerfile:
+        type: string
+        required: false
+        default: 'Dockerfile'
+      context:
+        type: string
+        required: false
+        default: '.'
+
+jobs:
+  build-and-push-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      issues: write
+      pull-requests: write
+
+    env:
+      REGISTRY: ghcr.io
+      # `github.repository` resolves to the CALLING repository, not this one.
+      IMAGE_NAME: ${{ inputs.image-name != '' && inputs.image-name || github.repository }}
+
+      # The release toolchain, pinned in one place for every consumer repo. Bumping a
+      # plugin here updates all of them on their next run; consumer repos must NOT carry
+      # these in their own devDependencies.
+      SEMANTIC_RELEASE_PACKAGES: >-
+        semantic-release@25.0.3
+        @semantic-release/commit-analyzer@13.0.1
+        @semantic-release/release-notes-generator@14.0.3
+        @semantic-release/exec@7.1.0
+        @semantic-release/npm@13.1.5
+        @semantic-release/github@12.0.6
+        @semantic-release/git@10.0.1
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          submodules: ${{ inputs.submodules }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      # Installed OUTSIDE the repo on purpose. Installing into the repo would rewrite
+      # package-lock.json, and @semantic-release/git commits that file as a release asset
+      # — the pollution would land in the release commit. An external prefix also cannot
+      # collide with the consumer's own dependency tree.
+      #
+      # Plugins still resolve: with no `extends` in the config, semantic-release resolves
+      # plugin names from its own __dirname before falling back to cwd, so the plugins
+      # sitting beside it in this prefix are found even though the repo has none.
+      - name: Install release toolchain
+        run: |
+          npm install --prefix "${RUNNER_TEMP}/semantic-release" \
+            --no-save --no-package-lock --no-fund --no-audit \
+            ${SEMANTIC_RELEASE_PACKAGES}
+
+      - name: Log in to Container registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Built but not pushed: semantic-release decides the version, then tags and
+      # pushes during its `publish` step. A failing build must publish nothing.
+      - name: Build Docker image
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          push: false
+          load: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+
+      # Written at runtime so the release pipeline lives in exactly one place.
+      # The quoted heredoc ('EOF') means the shell expands NOTHING here:
+      #   - ${nextRelease.version} survives for @semantic-release/exec's lodash template
+      #   - $REGISTRY / $IMAGE_NAME survive to be expanded by execa's shell at publish time
+      # Braces around REGISTRY/IMAGE_NAME would make lodash evaluate them as JavaScript
+      # against the semantic-release context, which does not contain them.
+      - name: Write semantic-release config
+        run: |
+          cat > release.config.js <<'EOF'
+          module.exports = {
+          	// No `branches` key on purpose: semantic-release's default branch list
+          	// already covers both "main" and "master".
+          	plugins: [
+          		"@semantic-release/commit-analyzer",
+          		"@semantic-release/release-notes-generator",
+          		[
+          			"@semantic-release/exec",
+          			{
+          				publishCmd: 'docker tag $REGISTRY/$IMAGE_NAME $REGISTRY/$IMAGE_NAME:${nextRelease.version} && docker push $REGISTRY/$IMAGE_NAME:${nextRelease.version} && docker push $REGISTRY/$IMAGE_NAME'
+          			}
+          		],
+          		[
+          			"@semantic-release/npm",
+          			{
+          				npmPublish: false
+          			}
+          		],
+          		"@semantic-release/github",
+          		[
+          			"@semantic-release/git",
+          			{
+          				assets: ["package.json", "package-lock.json"],
+          				message: "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
+          			}
+          		]
+          	]
+          };
+          EOF
+
+      # Run the pinned binary directly rather than `npx semantic-release`, which would
+      # resolve whatever the consumer repo happens to have installed.
+      - name: Create release
+        run: "${RUNNER_TEMP}/semantic-release/node_modules/.bin/semantic-release"
+        env:
+          # Falls back to GITHUB_TOKEN when the caller defines no RELEASE_TOKEN.
+          # Undefined secrets evaluate to an empty string, so `||` selects the fallback.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
