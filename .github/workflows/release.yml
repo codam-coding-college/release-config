@@ -47,6 +47,10 @@ jobs:
       # `github.repository` resolves to the CALLING repository, not this one.
       IMAGE_NAME: ${{ inputs.image-name != '' && inputs.image-name || github.repository }}
 
+      # Read by the build command inside the generated release config.
+      DOCKERFILE: ${{ inputs.dockerfile }}
+      BUILD_CONTEXT: ${{ inputs.context }}
+
       # The release toolchain, pinned in one place for every consumer repo. Bumping a
       # plugin here updates all of them on their next run; consumer repos must NOT carry
       # these in their own devDependencies.
@@ -93,23 +97,22 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Built but not pushed: semantic-release decides the version, then tags and
-      # pushes during its `publish` step. A failing build must publish nothing.
-      - name: Build Docker image
-        uses: docker/build-push-action@v7
-        with:
-          context: ${{ inputs.context }}
-          file: ${{ inputs.dockerfile }}
-          push: false
-          load: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-
       # Written at runtime so the release pipeline lives in exactly one place.
       # The quoted heredoc ('EOF') means the shell expands NOTHING here:
       #   - ${nextRelease.version} survives for @semantic-release/exec's lodash template
-      #   - $REGISTRY / $IMAGE_NAME survive to be expanded by execa's shell at publish time
-      # Braces around REGISTRY/IMAGE_NAME would make lodash evaluate them as JavaScript
+      #   - $REGISTRY / $IMAGE_NAME / $DOCKERFILE / $BUILD_CONTEXT survive to be expanded
+      #     by execa's shell when the command actually runs
+      # Braces around those variables would make lodash evaluate them as JavaScript
       # against the semantic-release context, which does not contain them.
+      #
+      # PLUGIN ORDER IS LOAD-BEARING. Each step runs plugins in array order, so:
+      #   prepare: npm writes the new version into package.json
+      #         -> exec builds the image, which therefore contains the NEW version
+      #         -> git commits package.json + package-lock.json and pushes
+      #   publish: exec tags and pushes the image
+      #         -> github creates the release
+      # Building outside semantic-release (as a normal workflow step) would build before
+      # the version bump and ship an image stamped with the PREVIOUS version.
       - name: Write semantic-release config
         run: |
           cat > release.config.js <<'EOF'
@@ -120,25 +123,26 @@ jobs:
           		"@semantic-release/commit-analyzer",
           		"@semantic-release/release-notes-generator",
           		[
-          			"@semantic-release/exec",
-          			{
-          				publishCmd: 'docker tag $REGISTRY/$IMAGE_NAME $REGISTRY/$IMAGE_NAME:${nextRelease.version} && docker push $REGISTRY/$IMAGE_NAME:${nextRelease.version} && docker push $REGISTRY/$IMAGE_NAME'
-          			}
-          		],
-          		[
           			"@semantic-release/npm",
           			{
           				npmPublish: false
           			}
           		],
-          		"@semantic-release/github",
+          		[
+          			"@semantic-release/exec",
+          			{
+          				prepareCmd: 'docker build -f $DOCKERFILE -t $REGISTRY/$IMAGE_NAME $BUILD_CONTEXT',
+          				publishCmd: 'docker tag $REGISTRY/$IMAGE_NAME $REGISTRY/$IMAGE_NAME:${nextRelease.version} && docker push $REGISTRY/$IMAGE_NAME:${nextRelease.version} && docker push $REGISTRY/$IMAGE_NAME'
+          			}
+          		],
           		[
           			"@semantic-release/git",
           			{
           				assets: ["package.json", "package-lock.json"],
           				message: "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
           			}
-          		]
+          		],
+          		"@semantic-release/github"
           	]
           };
           EOF

@@ -111,9 +111,28 @@ is the consumer's checkout.
 
 ## Ordering
 
-The image is built with `push: false, load: true` *before* semantic-release runs, then
-tagged and pushed from semantic-release's `publish` step. A build failure therefore
-publishes nothing and creates no release.
+The Docker build runs *inside* semantic-release rather than as a separate workflow step,
+and the plugin order in the generated config is load-bearing:
+
+| Step | Plugin order | What happens |
+|---|---|---|
+| `prepare` | `npm` → `exec` → `git` | version written to `package.json`, **then** image built, then the release commit pushed |
+| `publish` | `exec` → `github` | image tagged and pushed, then the GitHub release created |
+
+Two properties follow from this.
+
+**The image contains the correct version.** `@semantic-release/npm` writes the new version
+into `package.json` during `prepare`, and only then does `exec` build the image. Building as
+an ordinary workflow step — before semantic-release runs — would bake in the *previous*
+version, which matters for any service that reads its own version at runtime.
+
+**A failed build publishes nothing.** If `docker build` fails during `prepare`,
+`@semantic-release/git` never runs, so no release commit is pushed. semantic-release creates
+the git tag only after `prepare` completes, so there is no tag and no GitHub release either.
+The only mutation is to `package.json` in the runner's throwaway checkout.
+
+This is why the build does not use `docker/build-push-action`: that action cannot know the
+version, because semantic-release has not computed it yet at step level.
 
 ## Changes take effect immediately
 
