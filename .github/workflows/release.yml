@@ -121,9 +121,12 @@ jobs:
       #         -> github creates the release
       # Building outside semantic-release (as a normal workflow step) would build before
       # the version bump and ship an image stamped with the PREVIOUS version.
+      #
+      # Written as .cjs, not .js: a repo with "type": "module" in package.json parses .js
+      # as ESM, where `module.exports` throws. .cjs is CommonJS regardless.
       - name: Write semantic-release config
         run: |
-          cat > release.config.js <<'EOF'
+          cat > release.config.cjs <<'EOF'
           module.exports = {
           	// No `branches` key on purpose: semantic-release's default branch list
           	// already covers both "main" and "master".

@@ -25,7 +25,9 @@ jobs:
     uses: codam-coding-college/release-config/.github/workflows/release.yml@main
 ```
 
-Do not create your own `release.config.js` in the consumer repo. The workflow writes one at runtime.
+Do not create your own release config in the consumer repo. The workflow writes a
+`release.config.cjs` at runtime, and a `release.config.js` left behind would take precedence
+over it.
 It deliberately sets no `repositoryUrl`, so semantic-release infers it from the checkout's git
 remote, and the image path reaches `publishCmd` through the `$IMAGE_NAME` environment variable
 rather than the config.
