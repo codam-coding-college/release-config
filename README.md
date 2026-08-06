@@ -23,11 +23,7 @@ on:
 jobs:
   deploy:
     uses: codam-coding-college/release-config/.github/workflows/release.yml@main
-    secrets: inherit
 ```
-
-`secrets: inherit` is required, as the workflow needs `GITHUB_TOKEN` to push to GHCR and to
-create the release.
 
 Do not create your own `release.config.js` in the consumer repo. The workflow writes one at runtime.
 It deliberately sets no `repositoryUrl`, so semantic-release infers it from the checkout's git
@@ -48,7 +44,6 @@ jobs:
   deploy:
     needs: [tests]
     uses: codam-coding-college/release-config/.github/workflows/release.yml@main
-    secrets: inherit
 ```
 
 ## Inputs
@@ -75,10 +70,18 @@ update whatever pulls the image rather than overriding this.
 
 ## Secrets
 
-- `GITHUB_TOKEN`: inherited, used by default.
-- `RELEASE_TOKEN`: optional. If the consumer defines it, it is used instead of
-  `GITHUB_TOKEN`: for the semantic-release step. Needed when releases must trigger
-  further workflows, which `GITHUB_TOKEN` deliberately cannot do.
+- `GITHUB_TOKEN`: used by default. Needs no passing; every job gets one.
+- `RELEASE_TOKEN`: optional, and preferred over `GITHUB_TOKEN` when present. Pass it
+  explicitly to opt in:
+
+  ```yaml
+    secrets:
+      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+  ```
+
+  Only needed when the release must trigger other workflows, which `GITHUB_TOKEN`
+  deliberately cannot do, or must push past branch protection it cannot bypass.
+  Note that `secrets: inherit` passes it implicitly — avoid it unless you want that.
 
 ## What it publishes
 

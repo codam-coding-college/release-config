@@ -32,6 +32,14 @@ on:
         type: string
         required: false
         default: '.'
+    secrets:
+      RELEASE_TOKEN:
+        description: >-
+          Optional PAT used instead of GITHUB_TOKEN for the release step. Only needed when
+          the release must trigger other workflows, or must push past branch protection
+          that GITHUB_TOKEN cannot bypass. Consumers should normally omit this — and omit
+          `secrets: inherit`, which would pass an existing RELEASE_TOKEN implicitly.
+        required: false
 
 jobs:
   build-and-push-image:
